@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VaultX · Withdrawal orders</title>
+<style>
+:root{color-scheme:dark;--bg:#07111f;--card:#0b1929;--line:#20364d;--muted:#9fb0c4;--green:#31c99a;--red:#ff6b75;--amber:#f0b54c}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#f4f7fb;font:15px system-ui,Segoe UI,sans-serif}.page{max-width:1000px;margin:0 auto;padding:28px 20px 60px}h1{margin:0 0 8px}.muted{color:var(--muted);line-height:1.5}.toolbar,.row{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap}.panel,.order{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;margin:16px 0}.button{border:0;border-radius:9px;padding:10px 14px;background:#142a40;color:#edf4fc;border:1px solid var(--line);font-weight:700;cursor:pointer}.button:hover{border-color:#3f7b72}.button:disabled{opacity:.5;cursor:wait}.amount{font-size:20px;font-weight:800}.error{color:var(--red)}.success{color:var(--green)}.small{font-size:13px}.notice{border-left:3px solid var(--amber);padding:10px 12px;background:#211d13;color:#f5dfa8;border-radius:5px;margin-top:14px}.mono{font:13px ui-monospace,Consolas,monospace;overflow-wrap:anywhere}.field{display:flex;align-items:center;gap:8px;margin-top:8px}.address{flex:1;background:#07111f;border:1px dashed #38516c;border-radius:9px;padding:10px}.hash-input{flex:1;min-width:220px;background:#07111f;border:1px solid var(--line);border-radius:9px;padding:11px;color:#fff}.empty{padding:24px;text-align:center}
+</style>
+</head>
+<body>
+<main class="page">
+  <p><a href="/" class="muted">← Back to VaultX</a></p>
+  <div class="toolbar"><div><h1>Withdrawal orders</h1><p class="muted">Private operator queue. Review the order, then send it yourself from Trust Wallet. VaultX watches the chain and updates the request after it confirms.</p></div><button id="refresh" class="button" type="button">Refresh orders</button></div>
+  <section class="panel">
+    <p id="status" class="muted" role="status" aria-live="polite">Loading withdrawal orders…</p>
+    <div id="orders"></div>
+    <div class="notice">Check the recipient and exact net amount before sending. Send only on the displayed network. VaultX never asks for your recovery phrase or private key. If multiple pending orders have the same recipient and amount, the monitor will leave them unmatched rather than guess.</div>
+  </section>
+</main>
+<script>
+const apiBase=`${(window.VAULTX_API_BASE||(location.hostname==="localhost"||location.hostname==="127.0.0.1"?"http://localhost:4000":`${location.protocol}//${location.hostname}:4000`)).replace(/\/+$/,"")}/api`;
+let refreshBusy=false;
+function setStatus(message,kind="muted"){const node=document.getElementById("status");node.textContent=message;node.className=kind}
+function formatAmount(value){return `${Number(value).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:8})} USDT`}
+async function copyText(value,button){try{await navigator.clipboard.writeText(value);const previous=button.textContent;button.textContent="Copied";setTimeout(()=>button.textContent=previous,1400)}catch{setStatus("Could not copy automatically. Select and copy the value manually.","error")}}
+async function loadOrders(){
+  if(refreshBusy)return;refreshBusy=true;const refresh=document.getElementById("refresh");refresh.disabled=true;
+  try{
+    const accessToken=localStorage.getItem("vaultx_token");
+    if(!accessToken){setStatus("Sign in to VaultX with the authorized operator account, then reload this page.","error");document.getElementById("orders").replaceChildren();return}
+    const response=await fetch(`${apiBase}/payouts/pending`,{headers:{authorization:`Bearer ${accessToken}`}});
+    const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(data.error||`Could not load orders (${response.status})`);
+    const orders=data.withdrawals||[];const root=document.getElementById("orders");
+    if(!orders.length){root.innerHTML='<div class="empty muted">No pending withdrawal orders.</div>';setStatus(data.configurationError||"Queue is up to date.",data.configurationError?"error":"muted");return}
+    root.innerHTML=orders.map(order=>{
+      const supported=order.network==="BEP20";
+      const existingHash=order.payoutTxHash?order.payoutTxHash.replace(/^BEP20:/i,""):"";
+      return `<article class="order"><div class="row"><div><strong>${escapeHtml(order.reference||"Withdrawal order")}</strong><div class="muted small">${new Date(order.createdAt).toLocaleString()} · ${escapeHtml(order.network||"Network not set")}</div></div><div><div class="amount">${formatAmount(order.netAmount)}</div><button class="button" type="button" data-copy="${escapeAttr(order.netAmount)}">Copy exact amount</button></div></div><p class="small">Requested: ${formatAmount(order.amount)} · Fee: ${formatAmount(order.feeAmount)}</p><div class="field"><div class="address mono">${escapeHtml(order.address||"No destination address")}</div><button class="button" type="button" data-copy="${escapeAttr(order.address||"")}">Copy address</button></div><p class="small ${supported?"muted":"error"}">${supported?"Ready for manual sending in Trust Wallet.":"This request is not BEP20; automated chain confirmation currently supports BEP20 only."}</p>${supported?`<p class="small muted">After you send the payout, paste its transaction hash here if it has not already been matched automatically.</p><form class="field" data-order="${escapeAttr(order.id)}"><input class="hash-input" name="txHash" autocomplete="off" spellcheck="false" placeholder="0x transaction hash" value="${escapeAttr(existingHash)}" required><button class="button" type="submit">${existingHash?"Check transfer":"Verify sent transfer"}</button></form>${existingHash?`<button class="button" type="button" data-clear-hash="${escapeAttr(order.id)}">Clear mistaken hash</button>`:""}<p class="small muted" id="order-result-${escapeAttr(order.id)}"></p>`:""}</article>`;
+    }).join("");
+    root.querySelectorAll("[data-copy]").forEach(button=>button.addEventListener("click",()=>copyText(button.dataset.copy,button)));
+    root.querySelectorAll("form[data-order]").forEach(form=>form.addEventListener("submit",verifySentTransfer));
+    root.querySelectorAll("[data-clear-hash]").forEach(button=>button.addEventListener("click",()=>clearMistakenHash(button.dataset.clearHash)));
+    setStatus(data.configurationError||`${orders.length} pending order${orders.length===1?"":"s"}.`,data.configurationError?"error":"muted");
+  }catch(error){setStatus(error instanceof Error?error.message:"Could not load withdrawal orders.","error")}
+  finally{refreshBusy=false;refresh.disabled=false}
+}
+async function verifySentTransfer(event){
+  event.preventDefault();const form=event.currentTarget;const id=form.dataset.order;const hash=String(new FormData(form).get("txHash")||"").trim();const result=document.getElementById(`order-result-${id}`);const button=form.querySelector("button");
+  if(!/^0x[\da-fA-F]{64}$/.test(hash)){result.textContent="Enter the transaction hash from the transfer you already sent.";result.className="small error";return}
+  button.disabled=true;result.textContent="Checking the on-chain transfer…";result.className="small muted";
+  try{const accessToken=localStorage.getItem("vaultx_token");const response=await fetch(`${apiBase}/payouts/${encodeURIComponent(id)}/broadcasted`,{method:"POST",headers:{"content-type":"application/json",authorization:`Bearer ${accessToken||""}`},body:JSON.stringify({txHash:hash})});const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(data.error||`Could not verify transfer (${response.status})`);result.textContent=data.message||"Transfer verified.";result.className=`small ${data.status==="PENDING"?"muted":"success"}`;setTimeout(loadOrders,1500)}catch(error){result.textContent=error instanceof Error?error.message:"Could not verify transfer.";result.className="small error"}
+  finally{button.disabled=false}
+}
+async function clearMistakenHash(id){
+  const confirmed=confirm("Clear the attached hash only if it was entered by mistake and you have NOT sent a payout for this order using that hash. Clearing a hash does not reverse a blockchain transfer. Continue?");
+  if(!confirmed)return;
+  const result=document.getElementById(`order-result-${id}`);result.textContent="Checking whether the hash can be safely cleared…";result.className="small muted";
+  try{const accessToken=localStorage.getItem("vaultx_token");const response=await fetch(`${apiBase}/payouts/${encodeURIComponent(id)}/clear-mistaken-hash`,{method:"POST",headers:{"content-type":"application/json",authorization:`Bearer ${accessToken||""}`},body:JSON.stringify({confirmNoPayoutSent:true})});const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(data.error||`Could not clear hash (${response.status})`);setStatus(data.message||"Mistaken hash cleared.","success");await loadOrders()}catch(error){result.textContent=error instanceof Error?error.message:"Could not clear the attached hash.";result.className="small error"}
+}
+function escapeHtml(value){return String(value).replace(/[&<>"']/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[char]))}
+function escapeAttr(value){return escapeHtml(value)}
+document.getElementById("refresh").addEventListener("click",loadOrders);
+void loadOrders();setInterval(loadOrders,15000);
+</script>
+</body>
+</html>
