@@ -1,8 +1,7 @@
 const API_ORIGIN = window.VAULTX_API_BASE || (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
   ? "http://localhost:4000"
-  : `${window.location.protocol}//${window.location.hostname}:4000`);
-const API_BASE = `${API_ORIGIN.replace(/\/+$/, "")}/api`;
-const DEPOSIT_REQUEST_TTL_MS = 20 * 60 * 1000;
+  : "https://vaultx-api-tzo5.onrender.com");
+const API_BASE = `${API_ORIGIN.replace(/\/+$/, "")}/api`;const DEPOSIT_REQUEST_TTL_MS = 20 * 60 * 1000;
 
 // Expose logout immediately for the existing inline button in index.html.
 // Keeping this at top level also makes the handler available if auth setup
